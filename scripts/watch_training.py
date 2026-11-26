@@ -359,6 +359,7 @@ def run_preview(args) -> int:
         history.sample(episode, 0.0, ep.progress)
         mark, mark_step = ep.progress, 0
         end = None
+        waiting_to_start = False
         tick, deadline, next_reload, next_hud = cfg.k / 120.0, time.monotonic(), 0.0, 0.0
         while not stopped and not stop.exists():
             now = time.monotonic()
@@ -371,36 +372,50 @@ def run_preview(args) -> int:
                     error = f"Checkpoint reload: {exc}"
                     print(error, flush=True)
                 next_reload = now + args.reload_seconds
-            if end:
+            if end and (end != "won" or client.preview_restart_pressed()):
+                waiting_to_start = end == "won"
                 ep = HostEpisode(reader.policy.cfg, client.reset())
                 episode += 1
                 history.sample(episode, 0.0, ep.progress)
                 mark, mark_step = ep.progress, 0
                 end = None
+                visual = {}
                 next_hud = 0.0
-            observation = ep.obs()
-            observation[103] = min(1.0, observation[103])
-            action, visual = reader.policy.act(observation, rng, args.noise)
-            raw = client.step(*(action * cfg.mouse).astype(float))
+            elif waiting_to_start and client.preview_restart_pressed():
+                waiting_to_start = False
+                next_hud = 0.0
             target_seconds = ep.target_seconds
-            _, end = ep.step(action, raw, client.on_snake)
-            if ep.progress >= mark + 1.0:
-                mark, mark_step = ep.progress, ep.t
-            end = preview_end(end, (ep.t - mark_step) * tick)
-            update_records(records, episode, ep.best, ep.target_seconds)
-            if end:
-                records["lastReset"] = f"#{episode} {end} at {ep.progress:.1f} ({ep.t * tick:.1f}s)"
-                print(f"Preview reset: {records['lastReset']}", flush=True)
+            just_ended = False
+            if not end and not waiting_to_start:
+                observation = ep.obs()
+                observation[103] = min(1.0, observation[103])
+                action, visual = reader.policy.act(observation, rng, args.noise)
+                raw = client.step(*(action * cfg.mouse).astype(float))
+                _, end = ep.step(action, raw, client.on_snake)
+                if ep.progress >= mark + 1.0:
+                    mark, mark_step = ep.progress, ep.t
+                end = preview_end(end, (ep.t - mark_step) * tick)
+                update_records(records, episode, ep.best, ep.target_seconds)
+                if end:
+                    just_ended = True
+                    records["lastReset"] = f"#{episode} {end} at {ep.progress:.1f} ({ep.t * tick:.1f}s)"
+                    print(f"Preview result: {records['lastReset']}", flush=True)
             if target_seconds is None and ep.target_seconds is not None:
                 print(f"Attempt {episode}: reached route {cfg.timed_target:g} in {ep.target_seconds:.2f} game seconds",
                       flush=True)
             now = time.monotonic()
-            if records != persisted and (now >= next_save or end or target_seconds != ep.target_seconds):
+            if records != persisted and (now >= next_save or just_ended or target_seconds != ep.target_seconds):
                 write_hud(records_path, records)
                 persisted = records.copy()
                 next_save = now + 1.0
-            if now >= next_hud or end:
+            if now >= next_hud or just_ended:
+                prompt = ""
+                if end == "won":
+                    prompt = "Won. Press R to respawn."
+                elif waiting_to_start:
+                    prompt = "Press R to start the climb and timer."
                 payload = dict(phase="LIVE PREVIEW / shared policy", error=error,
+                               previewPrompt=prompt,
                                **training_metrics(reader, latest_metrics(args.run)),
                                previewProgress=float(ep.progress), previewBest=float(ep.best),
                                previewReturn=float(ep.ret), episode=episode,

@@ -71,7 +71,7 @@ sealed class TrainingHud : MonoBehaviour
 
     void OnGUI()
     {
-        if (Patches.Ending && Patches.Won && (data == null || data.targetProgress <= 0)) return;
+        if (Patches.Ending && Patches.Won && data == null) return;
         InitDrawing();
         var oldMatrix = GUI.matrix;
         var oldColor = GUI.color;
